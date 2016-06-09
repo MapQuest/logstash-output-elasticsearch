@@ -139,6 +139,14 @@ module LogStash; module Outputs; class ElasticSearch;
         params[:_upsert] = LogStash::Json.load(event.sprintf(@upsert)) if @upsert != ""
         params[:_script] = event.sprintf(@script) if @script != ""
       end
+
+      if @version
+        params[:_version] = event.sprintf(@version)
+      end
+
+      if @version_type
+        params[:_version_type] = event.sprintf(@version_type)
+      end
       params
     end
 
