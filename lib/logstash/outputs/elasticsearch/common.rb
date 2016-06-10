@@ -141,7 +141,7 @@ module LogStash; module Outputs; class ElasticSearch;
       end
 
       if @version
-        params[:_version] = event.sprintf(@version)
+        params[:_version] = Integer(event.sprintf(@version))
       end
 
       if @version_type
