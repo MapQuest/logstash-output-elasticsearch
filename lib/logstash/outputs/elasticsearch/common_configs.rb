@@ -67,7 +67,6 @@ module LogStash; module Outputs; class ElasticSearch
       mod.config :routing, :validate => :string
 
       # The document's version to use. Overrides Elasticsearch's internal version scheme.
-      # It is cast into an integer to support dynamic configuration
       mod.config :version, :validate => :string
 
       # Allows for using different versioning system by using your own.
