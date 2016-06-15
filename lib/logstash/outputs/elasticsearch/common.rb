@@ -131,7 +131,9 @@ module LogStash; module Outputs; class ElasticSearch;
         :_id => @document_id ? event.sprintf(@document_id) : nil,
         :_index => event.sprintf(@index),
         :_type => type,
-        :_routing => @routing ? event.sprintf(@routing) : nil
+        :_routing => @routing ? event.sprintf(@routing) : nil,
+        :_version => @version ? event.sprintf(@version) : nil,
+        :_version_type => @version ? event.sprintf(@version_type) : nil
       }
 
       params[:parent] = event.sprintf(@parent) if @parent
@@ -140,13 +142,6 @@ module LogStash; module Outputs; class ElasticSearch;
         params[:_script] = event.sprintf(@script) if @script != ""
       end
 
-      if @version
-        params[:_version] = Integer(event.sprintf(@version))
-      end
-
-      if @version_type
-        params[:_version_type] = event.sprintf(@version_type)
-      end
       params
     end
 
