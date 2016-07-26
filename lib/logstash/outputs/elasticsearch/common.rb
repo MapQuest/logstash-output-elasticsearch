@@ -160,7 +160,7 @@ module LogStash; module Outputs; class ElasticSearch;
       end
 
       if @version_type
-        params[:_version_type] = event.sprint(@version_type)
+        params[:_version_type] = event.sprintf(@version_type)
       end
 
       params
