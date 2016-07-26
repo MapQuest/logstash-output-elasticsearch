@@ -139,8 +139,6 @@ module LogStash; module Outputs; class ElasticSearch;
         :_index => event.sprintf(@index),
         :_type => type,
         :_routing => @routing ? event.sprintf(@routing) : nil,
-        :_version => @version ? event.sprintf(@version) : nil,
-        :_version_type => @version ? event.sprintf(@version_type) : nil
       }
 
       if @pipeline
@@ -155,6 +153,14 @@ module LogStash; module Outputs; class ElasticSearch;
         params[:_upsert] = LogStash::Json.load(event.sprintf(@upsert)) if @upsert != ""
         params[:_script] = event.sprintf(@script) if @script != ""
         params[:_retry_on_conflict] = @retry_on_conflict
+      end
+
+      if @version
+        params[:_version] = event.sprintf(@version)
+      end
+
+      if @version_type
+        params[:_version_type] = event.sprint(@version_type)
       end
 
       params
