@@ -279,4 +279,31 @@ describe "outputs/elasticsearch" do
       end
     end
   end
+
+  describe "the version options" do
+    let(:event) { LogStash::Event.new("message" => "blah") }
+    subject(:eso) { LogStash::Outputs::ElasticSearch.new(options) }
+
+    context "when providing a version" do
+      let(:options) { {"action" => "update", "version" => "5", "version_type" => "external"} }
+
+      it "should add the given version" do
+        action, params, event_data = eso.event_action_tuple(event)
+        expect(params).to include({:_version => "5"})
+      end
+
+      it "should add the given version_type" do
+        action, params, event_data = eso.event_action_tuple(event)
+        expect(params).to include({:_version_type => "external"})
+      end
+    end
+
+    context "with an invalid version_type" do
+      let(:options) { {"action" => "index", "version" => "6", "version_type" => "myversiontype"} }
+
+      it "should raise a configuration error" do
+        expect { subject.register }.to raise_error(LogStash::ConfigurationError)
+      end
+    end
+  end
 end
