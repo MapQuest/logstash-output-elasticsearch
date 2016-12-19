@@ -63,10 +63,10 @@ module LogStash; module Outputs; class ElasticSearch
       mod.config :version, :validate => :string
 
       # Allows for using different versioning system by using your own.
-      # Note: 'external_gte' and 'force' are for special cases. They may result in loss of data if
-      # used incorrectly.
+      # Note: 'external_gte' and are for special cases. They may result in loss of data
+      # if used incorrectly.
       # See https://www.elastic.co/guide/en/elasticsearch/reference/current/docs-index_.html#_version_types[here] for more on using version_type.
-      mod.config :version_type, :validate => ["internal", 'external', "external_gt", "external_gte", "force"]
+      mod.config :version_type, :validate => ["internal", 'external', "external_gt", "external_gte"]
 
       # A routing override to be applied to all processed events.
       # This can be dynamic using the `%{foo}` syntax.
