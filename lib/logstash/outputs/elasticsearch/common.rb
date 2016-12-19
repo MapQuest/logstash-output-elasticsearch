@@ -142,7 +142,7 @@ module LogStash; module Outputs; class ElasticSearch;
         :_id => @document_id ? event.sprintf(@document_id) : nil,
         :_index => event.sprintf(@index),
         :_type => type,
-        :_routing => @routing ? event.sprintf(@routing) : nil,
+        :_routing => @routing ? event.sprintf(@routing) : nil
       }
 
       if @pipeline
