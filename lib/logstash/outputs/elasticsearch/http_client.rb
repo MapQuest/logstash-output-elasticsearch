@@ -5,6 +5,21 @@ require 'logstash/outputs/elasticsearch/http_client/pool'
 require 'logstash/outputs/elasticsearch/http_client/manticore_adapter'
 
 module LogStash; module Outputs; class ElasticSearch;
+  # This is a constant instead of a config option because
+  # there really isn't a good reason to configure it.
+  #
+  # The criteria used are:
+  # 1. We need a number that's less than 100MiB because ES
+  #    won't accept bulks larger than that.
+  # 2. It must be large enough to amortize the connection constant
+  #    across multiple requests.
+  # 3. It must be small enough that even if multiple threads hit this size
+  #    we won't use a lot of heap.
+  #
+  # We wound up agreeing that a number greater than 10 MiB and less than 100MiB
+  # made sense. We picked one on the lowish side to not use too much heap.
+  TARGET_BULK_BYTES = 20 * 1024 * 1024 # 20MiB
+
   class HttpClient
     attr_reader :client, :options, :logger, :pool, :action_count, :recv_count
     # This is here in case we use DEFAULT_OPTIONS in the future
@@ -38,9 +53,11 @@ module LogStash; module Outputs; class ElasticSearch;
     def bulk(actions)
       @action_count ||= 0
       @action_count += actions.size
-      
+
       return if actions.empty?
-      bulk_body = actions.collect do |action, args, source|
+
+
+      bulk_actions = actions.collect do |action, args, source|
         args, source = update_action_builder(args, source) if action == 'update'
 
         if source && action != 'delete'
@@ -48,13 +65,37 @@ module LogStash; module Outputs; class ElasticSearch;
         else
           next { action => args }
         end
-      end.
-      flatten.
-      reduce("") do |acc,line|
-        acc << LogStash::Json.dump(line)
-        acc << "\n"
       end
 
+      bulk_body = ""
+      bulk_responses = []
+      bulk_actions.each do |action|
+        as_json = action.is_a?(Array) ?
+                    action.map {|line| LogStash::Json.dump(line)}.join("\n") :
+                    LogStash::Json.dump(action)
+        as_json << "\n"
+
+        if (bulk_body.bytesize + as_json.bytesize) > TARGET_BULK_BYTES
+          bulk_responses << bulk_send(bulk_body)
+          bulk_body = as_json
+        else
+          bulk_body << as_json
+        end
+      end
+
+      bulk_responses << bulk_send(bulk_body) if bulk_body.size > 0
+
+      join_bulk_responses(bulk_responses)
+    end
+
+    def join_bulk_responses(bulk_responses)
+      {
+        "errors" => bulk_responses.any? {|r| r["errors"] == true},
+        "items" => bulk_responses.reduce([]) {|m,r| m.concat(r["items"])}
+      }
+    end
+
+    def bulk_send(bulk_body)
       # Discard the URL
       url, response = @pool.post("_bulk", nil, bulk_body)
       LogStash::Json.load(response.body)
@@ -90,7 +131,7 @@ module LogStash; module Outputs; class ElasticSearch;
       timeout = options[:timeout] || 0
 
       host_ssl_opt = client_settings[:ssl].nil? ? nil : client_settings[:ssl][:enabled]
-      urls = hosts.map {|host| host_to_url(host, host_ssl_opt, client_settings[:path])}
+      urls = hosts.map {|host| host_to_url(host, host_ssl_opt, client_settings[:path], client_settings[:parameters])}
 
       adapter_options = {
         :socket_timeout => timeout,
@@ -98,6 +139,8 @@ module LogStash; module Outputs; class ElasticSearch;
       }
 
       adapter_options[:proxy] = client_settings[:proxy] if client_settings[:proxy]
+
+      adapter_options[:check_connection_timeout] = client_settings[:check_connection_timeout] if client_settings[:check_connection_timeout]
 
       # Having this explicitly set to nil is an error
       if client_settings[:pool_max]
@@ -143,7 +186,7 @@ module LogStash; module Outputs; class ElasticSearch;
     HOSTNAME_PORT_REGEX=/\A(?<hostname>([A-Za-z0-9\.\-]+)|\[[0-9A-Fa-f\:]+\])(:(?<port>\d+))?\Z/
     URL_REGEX=/\A#{URI::regexp(['http', 'https'])}\z/
     # Parse a configuration host to a normalized URL
-    def host_to_url(host, ssl=nil, path=nil)
+    def host_to_url(host, ssl=nil, path=nil, parameters=nil)
       explicit_scheme = case ssl
                         when true
                           "https"
@@ -182,11 +225,21 @@ module LogStash; module Outputs; class ElasticSearch;
       end
 
       if path && url.path && url.path != "/" && url.path != ''
-        raise LogStash::ConfigurationError, "A path '#{url.path}' has been explicitly specified in the url '#{url}', but you also specified a path of '#{path}'. This is probably a mistake, please remove one setting."
+        safe_url = ::LogStash::Outputs::ElasticSearch::SafeURL.without_credentials(url)
+        raise LogStash::ConfigurationError, "A path '#{url.path}' has been explicitly specified in the url '#{safe_url}', but you also specified a path of '#{path}'. This is probably a mistake, please remove one setting."
       end
 
       if path
         url.path = path  # The URI library cannot stringify if it holds a nil
+      end
+
+      if parameters
+        query_string = parameters.map { |k,v| "#{k}=#{v}" }.join("&")
+        if query = url.query
+          url.query = "#{query}&#{query_string}"
+        else
+          url.query = query_string
+        end
       end
 
       if url.password || url.user

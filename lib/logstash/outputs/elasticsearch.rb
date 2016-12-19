@@ -15,10 +15,22 @@ require "uri" # for escaping user input
 # This output only speaks the HTTP protocol. HTTP is the preferred protocol for interacting with Elasticsearch as of Logstash 2.0.
 # We strongly encourage the use of HTTP over the node protocol for a number of reasons. HTTP is only marginally slower,
 # yet far easier to administer and work with. When using the HTTP protocol one may upgrade Elasticsearch versions without having
-# to upgrade Logstash in lock-step. For those still wishing to use the node or transport protocols please see
-# the <<plugins-outputs-elasticsearch_java,elasticsearch_java output plugin>>.
-#
+# to upgrade Logstash in lock-step. 
+# 
 # You can learn more about Elasticsearch at <https://www.elastic.co/products/elasticsearch>
+#
+# ==== Template management for Elasticsearch 5.x
+# Index template for this version (Logstash 5.0) has been changed to reflect Elasticsearch's mapping changes in version 5.0.
+# Most importantly, the subfield for string multi-fields has changed from `.raw` to `.keyword` to match ES default
+# behavior.
+#
+# ** Users installing ES 5.x and LS 5.x **
+# This change will not affect you and you will continue to use the ES defaults.
+#
+# ** Users upgrading from LS 2.x to LS 5.x with ES 5.x **
+# LS will not force upgrade the template, if `logstash` template already exists. This means you will still use
+# `.raw` for sub-fields coming from 2.x. If you choose to use the new template, you will have to reindex your data after
+# the new template is installed.
 #
 # ==== Retry Policy
 #
@@ -34,6 +46,10 @@ require "uri" # for escaping user input
 #
 # NOTE: 409 exceptions are no longer retried. Please set a higher `retry_on_conflict` value if you experience 409 exceptions.
 # It is more performant for Elasticsearch to retry these exceptions than this plugin.
+#
+# ==== Batch Sizes ====
+# This plugin attempts to send batches of events as a single request. However, if
+# a request exceeds 20MB we will break it up until multiple batch requests. If a single document exceeds 20MB it will be sent as a single request.
 #
 # ==== DNS Caching
 #
@@ -86,6 +102,11 @@ class LogStash::Outputs::ElasticSearch < LogStash::Outputs::Base
   # not also set this field. That will raise an error at startup
   config :path, :validate => :string
 
+  # Pass a set of key value pairs as the URL query string. This query string is added
+  # to every host listed in the 'hosts' configuration. If the 'hosts' list contains
+  # urls that already have query strings, the one specified here will be appended.
+  config :parameters, :validate => :hash
+
   # Enable SSL/TLS secured communication to Elasticsearch cluster. Leaving this unspecified will use whatever scheme
   # is specified in the URLs listed in 'hosts'. If no explicit protocol is specified plain HTTP will be used.
   # If SSL is explicitly disabled here the plugin will refuse to start if an HTTPS URL is given in 'hosts'
@@ -131,9 +152,9 @@ class LogStash::Outputs::ElasticSearch < LogStash::Outputs::Base
 
   # Set the timeout, in seconds, for network operations and requests sent Elasticsearch. If
   # a timeout occurs, the request will be retried.
-  config :timeout, :validate => :number
+  config :timeout, :validate => :number, :default => 60
 
-  # Set the Elasticsearch errors in the whitelist that you don't want to log. 
+  # Set the Elasticsearch errors in the whitelist that you don't want to log.
   # A useful example is when you want to skip all 409 errors
   # which are `document_already_exists_exception`.
   config :failure_type_logging_whitelist, :validate => :array, :default => []
@@ -160,6 +181,16 @@ class LogStash::Outputs::ElasticSearch < LogStash::Outputs::Base
   # Resurrection is the process by which backend endpoints marked 'down' are checked
   # to see if they have come back to life
   config :resurrect_delay, :validate => :number, :default => 5
+
+  # How long to wait before checking if the connection is stale before executing a request on a connection using keepalive.
+  # You may want to set this lower, if you get connection errors regularly
+  # Quoting the Apache commons docs (this client is based Apache Commmons):
+  # 'Defines period of inactivity in milliseconds after which persistent connections must
+  # be re-validated prior to being leased to the consumer. Non-positive value passed to
+  # this method disables connection validation. This check helps detect connections that
+  # have become stale (half-closed) while kept inactive in the pool.'
+  # See https://hc.apache.org/httpcomponents-client-ga/httpclient/apidocs/org/apache/http/impl/conn/PoolingHttpClientConnectionManager.html#setValidateAfterInactivity(int)[these docs for more info]
+  config :validate_after_inactivity, :validate => :number, :default => 10000
 
   def build_client
     @client = ::LogStash::Outputs::ElasticSearch::HttpClientBuilder.build(@logger, @hosts, params)

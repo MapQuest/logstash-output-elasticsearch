@@ -6,12 +6,12 @@ module LogStash; module Outputs; class ElasticSearch; class HttpClient;
 
       def initialize(response_code, url, body)
         @response_code = response_code
-        @url = url
+        @url = ::LogStash::Outputs::ElasticSearch::SafeURL.without_credentials(url)
         @body = body
       end
 
       def message
-        "Got response code '#{response_code}' contact Elasticsrearch at URL '#{@url}'"
+        "Got response code '#{response_code}' contact Elasticsearch at URL '#{@url}'"
       end
     end
     class HostUnreachableError < Error;
@@ -19,7 +19,7 @@ module LogStash; module Outputs; class ElasticSearch; class HttpClient;
 
       def initialize(original_error, url)
         @original_error = original_error
-        @url = url
+        @url = ::LogStash::Outputs::ElasticSearch::SafeURL.without_credentials(url)
       end
 
       def message
@@ -62,8 +62,9 @@ module LogStash; module Outputs; class ElasticSearch; class HttpClient;
       # Holds metadata about all URLs
       @url_info = {}
       @stopping = false
-
+      
       update_urls(initial_urls)
+      
       start_resurrectionist
       start_sniffer if @sniffing
     end
@@ -96,7 +97,7 @@ module LogStash; module Outputs; class ElasticSearch; class HttpClient;
     end
 
     def alive_urls_count
-      @state_mutex.synchronize { @url_info.values.select {|v| !v[:dead] }.count }
+      @state_mutex.synchronize { @url_info.values.select {|v| !v[:state] == :alive }.count }
     end
 
     def url_info
@@ -150,14 +151,47 @@ module LogStash; module Outputs; class ElasticSearch; class HttpClient;
     ES2_SNIFF_RE_URL  = /([^\/]*)?\/?([^:]*):([0-9]+)/
     # Sniffs and returns the results. Does not update internal URLs!
     def check_sniff
-      url, resp = perform_request(:get, '_nodes')
+      url, resp = perform_request(:get, '_nodes/http')
       parsed = LogStash::Json.load(resp.body)
-      parsed['nodes'].map do |id,info|
+      
+      nodes = parsed['nodes']
+      if !nodes || nodes.empty?
+        @logger.warn("Sniff returned no nodes! Will not update hosts.")
+        return nil
+      else
+        case major_version(nodes)
+        when 5
+          sniff_5x(nodes)
+        when 2
+          sniff_2x_1x(nodes)
+        when 1
+          sniff_2x_1x(nodes)
+        else
+          @logger.warn("Could not determine version for nodes in ES cluster!")
+          return nil
+        end
+      end
+    end
+    
+    def major_version(nodes)
+      k,v = nodes.first; v['version'].split('.').first.to_i
+    end
+    
+    def sniff_5x(nodes)
+      nodes.map do |id,info|
+        if info["http"]
+          uri = LogStash::Util::SafeURI.new(info["http"]["publish_address"])
+        end
+      end.compact
+    end
+    
+    def sniff_2x_1x(nodes)
+      nodes.map do |id,info|
         # TODO Make sure this works with shield. Does that listed
         # stuff as 'https_address?'
+        
         addr_str = info['http_address'].to_s
         next unless addr_str # Skip hosts with HTTP disabled
-
 
         # Only connect to nodes that serve data
         # this will skip connecting to client, tribe, and master only nodes
@@ -170,7 +204,7 @@ module LogStash; module Outputs; class ElasticSearch; class HttpClient;
         if matches
           host = matches[1].empty? ? matches[2] : matches[1]
           port = matches[3]
-          URI.parse("#{@scheme}://#{host}:#{port}")
+          LogStash::Util::SafeURI.new("#{host}:#{port}")
         end
       end.compact
     end
@@ -186,22 +220,24 @@ module LogStash; module Outputs; class ElasticSearch; class HttpClient;
     def start_resurrectionist
       @resurrectionist = Thread.new do
         until_stopped("resurrection", @resurrect_delay) do
-          resurrect_dead!
+          healthcheck!
         end
       end
     end
 
-    def resurrect_dead!
+    def healthcheck!
       # Try to keep locking granularity low such that we don't affect IO...
-      @state_mutex.synchronize { @url_info.select {|url,meta| meta[:dead] } }.each do |url,meta|
+      @state_mutex.synchronize { @url_info.select {|url,meta| meta[:state] != :alive } }.each do |url,meta|
+        safe_url = ::LogStash::Outputs::ElasticSearch::SafeURL.without_credentials(url)
         begin
-          @logger.info("Checking url #{url} with path #{@healthcheck_path} to see if node resurrected")
-          perform_request_to_url(url, "HEAD", @healthcheck_path)
+          logger.info("Running health check to see if an Elasticsearch connection is working",
+                      url: safe_url, healthcheck_path: @healthcheck_path)
+          response = perform_request_to_url(url, "HEAD", @healthcheck_path)
           # If no exception was raised it must have succeeded!
-          logger.warn("Resurrected connection to dead ES instance at #{url}")
-          @state_mutex.synchronize { meta[:dead] = false }
-        rescue HostUnreachableError => e
-          logger.debug("Attempted to resurrect connection to dead ES instance at #{url}, got an error [#{e.class}] #{e.message}")
+          logger.warn("Restored connection to ES instance", :url => safe_url)
+          @state_mutex.synchronize { meta[:state] = :alive }
+        rescue HostUnreachableError, BadResponseCodeError => e
+          logger.warn("Attempted to resurrect connection to dead ES instance, but got an error.", url: safe_url, error_type: e.class, error: e.message)
         end
       end
     end
@@ -234,7 +270,7 @@ module LogStash; module Outputs; class ElasticSearch; class HttpClient;
     end
 
     def normalize_url(uri)
-      raise ArgumentError, "Only URI objects may be passed in!" unless uri.is_a?(URI)
+      raise ArgumentError, "Only URI/SafeURI objects may be passed in!" unless uri.is_a?(URI) || uri.is_a?(LogStash::Util::SafeURI)
       uri = uri.clone
 
       # Set credentials if need be
@@ -249,6 +285,8 @@ module LogStash; module Outputs; class ElasticSearch; class HttpClient;
     end
 
     def update_urls(new_urls)
+      return if new_urls.nil?
+      
       # Normalize URLs
       new_urls = new_urls.map(&method(:normalize_url))
 
@@ -259,7 +297,7 @@ module LogStash; module Outputs; class ElasticSearch; class HttpClient;
         new_urls.each do |url|
           # URI objects don't have real hash equality! So, since this isn't perf sensitive we do a linear scan
           unless @url_info.keys.include?(url)
-            state_changes[:added] << url.to_s
+            state_changes[:added] << url
             add_url(url)
           end
         end
@@ -267,14 +305,30 @@ module LogStash; module Outputs; class ElasticSearch; class HttpClient;
         # Delete connections not in the new list
         @url_info.each do |url,_|
           unless new_urls.include?(url)
-            state_changes[:removed] << url.to_s
+            state_changes[:removed] << url
             remove_url(url)
           end
         end
       end
 
       if state_changes[:removed].size > 0 || state_changes[:added].size > 0
-        logger.info("Elasticsearch pool URLs updated", :changes => state_changes)
+        if logger.info?
+          logger.info("Elasticsearch pool URLs updated", :changes => safe_state_changes(state_changes))
+        end
+      end
+      
+      # Run an inline healthcheck anytime URLs are updated
+      # This guarantees that during startup / post-startup
+      # sniffing we don't have idle periods waiting for the
+      # periodic sniffer to allow new hosts to come online
+      healthcheck! 
+    end
+    
+    def safe_state_changes(state_changes)
+      state_changes.reduce({}) do |acc, kv|
+        k,v = kv
+        acc[k] = v.map(&LogStash::Outputs::ElasticSearch::SafeURL.method(:without_credentials)).map(&:to_s)
+        acc
       end
     end
 
@@ -293,7 +347,7 @@ module LogStash; module Outputs; class ElasticSearch; class HttpClient;
     def empty_url_meta
       {
         :in_use => 0,
-        :dead => false
+        :state => :unknown
       }
     end
 
@@ -325,9 +379,10 @@ module LogStash; module Outputs; class ElasticSearch; class HttpClient;
         # In case a sniff happened removing the metadata just before there's nothing to mark
         # This is an extreme edge case, but it can happen!
         return unless meta 
-        logger.warn("Marking url as dead. Last error: [#{error.class}] #{error.message}",
-                    :url => url, :error_message => error.message, :error_class => error.class.name)
-        meta[:dead] = true
+        safe_url = ::LogStash::Outputs::ElasticSearch::SafeURL.without_credentials(url)
+        logger.warn("Marking url as dead.", :reason => error.message, :url => safe_url,
+                    :error_message => error.message, :error_class => error.class.name)
+        meta[:state] = :dead
         meta[:last_error] = error
         meta[:last_errored_at] = Time.now
       end
@@ -348,7 +403,7 @@ module LogStash; module Outputs; class ElasticSearch; class HttpClient;
         lowest_value_seen = nil
         @url_info.each do |url,meta|
           meta_in_use = meta[:in_use]
-          next if meta[:dead]
+          next if meta[:state] == :dead
 
           if lowest_value_seen.nil? || meta_in_use < lowest_value_seen
             lowest_value_seen = meta_in_use

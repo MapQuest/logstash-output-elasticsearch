@@ -1,4 +1,5 @@
 require 'manticore'
+require "logstash/outputs/elasticsearch/safe_url"
 
 module LogStash; module Outputs; class ElasticSearch; class HttpClient;
   class ManticoreAdapter
@@ -28,12 +29,10 @@ module LogStash; module Outputs; class ElasticSearch; class HttpClient;
     # @see    Transport::Base#perform_request
     #
     def perform_request(url, method, path, params={}, body=nil)
-      
-      
       params = (params || {}).merge @request_options
       params[:body] = body if body
-      url_and_path = (url + path).to_s # Convert URI object to string
-
+      # Convert URI object to string
+      url_and_path = path ? (url + path).to_s  : url.to_s
 
       resp = @manticore.send(method.downcase, url_and_path, params)
 
@@ -46,7 +45,8 @@ module LogStash; module Outputs; class ElasticSearch; class HttpClient;
       # template installation. We might need a better story around this later
       # but for our current purposes this is correct
       if resp.code < 200 || resp.code > 299 && resp.code != 404
-        raise ::LogStash::Outputs::ElasticSearch::HttpClient::Pool::BadResponseCodeError.new(resp.code, url_and_path, body)
+        safe_url = ::LogStash::Outputs::ElasticSearch::SafeURL.without_credentials(url)
+        raise ::LogStash::Outputs::ElasticSearch::HttpClient::Pool::BadResponseCodeError.new(resp.code, safe_url + path, resp.body)
       end
 
       resp

@@ -9,6 +9,10 @@ describe LogStash::Outputs::ElasticSearch::HttpClient::Pool do
   let(:options) { {:resurrect_delay => 2} } # Shorten the delay a bit to speed up tests
 
   subject { described_class.new(logger, adapter, initial_urls, options) }
+  
+  before do
+    allow(adapter).to receive(:perform_request).with(anything, 'HEAD', subject.healthcheck_path, {}, nil)
+  end
 
   describe "initialization" do
     it "should be successful" do
@@ -22,7 +26,7 @@ describe LogStash::Outputs::ElasticSearch::HttpClient::Pool do
     end
 
     it "should attempt to resurrect connections after the ressurrect delay" do
-      expect(subject).to receive(:resurrect_dead!).once
+      expect(subject).to receive(:healthcheck!).once
       sleep(subject.resurrect_delay + 1)
     end
   end
@@ -37,31 +41,6 @@ describe LogStash::Outputs::ElasticSearch::HttpClient::Pool do
 
       it "should start the sniffer" do
         expect(subject.sniffer_alive?).to eql(true)
-      end
-    end
-
-    describe "check sniff" do
-      context "with a good sniff result" do
-        let(:sniff_resp_path) { File.dirname(__FILE__) + '/../../../../fixtures/5x_node_resp.json' }
-        let(:sniff_resp) { double("resp") }
-        let(:sniff_resp_body) { File.open(sniff_resp_path).read }
-        
-        before do
-          allow(subject).to receive(:perform_request).
-                              with(:get, '_nodes').
-                              and_return([double('url'), sniff_resp])
-          allow(sniff_resp).to receive(:body).and_return(sniff_resp_body)
-        end
-        
-        it "should execute a sniff without error" do
-          expect { subject.check_sniff }.not_to raise_error
-        end
-
-        it "should return the correct sniff URL list" do
-          url_strs = subject.check_sniff.map(&:to_s)
-          expect(url_strs).to include("http://127.0.0.1:9200")
-          expect(url_strs).to include("http://127.0.0.1:9201")
-        end
       end
     end
   end
@@ -91,6 +70,21 @@ describe LogStash::Outputs::ElasticSearch::HttpClient::Pool do
     it "should wait for in use connections to terminate" do
       expect(subject).to have_received(:wait_for_in_use_connections).once
       expect(subject).to have_received(:in_use_connections).twice
+    end
+  end
+  
+  describe "safe_state_changes" do
+    let(:state_changes) do 
+      {
+        :added => [URI.parse("http://sekretu:sekretp@foo1")],
+        :removed => [URI.parse("http://sekretu:sekretp@foo2")]
+      }
+    end
+    let(:processed) { subject.safe_state_changes(state_changes)}
+    
+    it "should hide passwords" do
+      expect(processed[:added].any? {|p| p =~ /sekretp/ }).to be false
+      expect(processed[:removed].any? {|p| p =~ /sekretp/ }).to be false
     end
   end
 
@@ -133,9 +127,9 @@ describe LogStash::Outputs::ElasticSearch::HttpClient::Pool do
         subject.return_connection(u)
         subject.mark_dead(u, Exception.new)
 
-        expect(subject.url_meta(u)[:dead]).to eql(true)
+        expect(subject.url_meta(u)[:state]).to eql(:dead)
         sleep subject.resurrect_delay + 1
-        expect(subject.url_meta(u)[:dead]).to eql(false)
+        expect(subject.url_meta(u)[:state]).to eql(:alive)
       end
     end
   end

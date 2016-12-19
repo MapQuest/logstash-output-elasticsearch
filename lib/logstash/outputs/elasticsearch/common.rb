@@ -19,8 +19,12 @@ module LogStash; module Outputs; class ElasticSearch;
 
     # Receive an array of events and immediately attempt to index them (no buffering)
     def multi_receive(events)
-      events.each_slice(@flush_size) do |slice|
-        retrying_submit(slice.map {|e| event_action_tuple(e) })
+      if @flush_size
+        events.each_slice(@flush_size) do |slice|
+          retrying_submit(slice.map {|e| event_action_tuple(e) })
+        end
+      else
+        retrying_submit(events.map {|e| event_action_tuple(e)})
       end
     end
 
@@ -59,14 +63,14 @@ module LogStash; module Outputs; class ElasticSearch;
       VALID_HTTP_ACTIONS
     end
 
-    def retrying_submit(actions)      
+    def retrying_submit(actions)
       # Initially we submit the full list of actions
       submit_actions = actions
 
       sleep_interval = @retry_initial_interval
 
       while submit_actions && submit_actions.length > 0
-        
+
         # We retry with whatever is didn't succeed
         begin
           submit_actions = submit(submit_actions)
@@ -103,7 +107,7 @@ module LogStash; module Outputs; class ElasticSearch;
 
     def submit(actions)
       bulk_response = safe_bulk(actions)
-      
+
       # If the response is nil that means we were in a retry loop
       # and aborted since we're shutting down
       # If it did return and there are no errors we're good as well
@@ -142,7 +146,7 @@ module LogStash; module Outputs; class ElasticSearch;
       }
 
       if @pipeline
-        params[:pipeline] = @pipeline
+        params[:pipeline] = event.sprintf(@pipeline)
       end
 
      if @parent
@@ -216,14 +220,15 @@ module LogStash; module Outputs; class ElasticSearch;
         retry unless @stopping.true?
       rescue ::LogStash::Outputs::ElasticSearch::HttpClient::Pool::BadResponseCodeError => e
         if RETRYABLE_CODES.include?(e.response_code)
-          log_hash = {:code => e.response_code, :url => e.url}
+          safe_url = ::LogStash::Outputs::ElasticSearch::SafeURL.without_credentials(e.url)
+          log_hash = {:code => e.response_code, :url => safe_url}
           log_hash[:body] = e.body if @logger.debug? # Generally this is too verbose
           @logger.error("Attempted to send a bulk request to elasticsearch but received a bad HTTP response code!", log_hash)
 
           sleep_interval = sleep_for_interval(sleep_interval)
           retry unless @stopping.true?
         else
-          @logger.error("Got a bad response code from server, but this code is not considered retryable. Request will be dropped", :code => e.response_code)
+          @logger.error("Got a bad response code from server, but this code is not considered retryable. Request will be dropped", :code => e.response_code, :body => e.response.body)
         end
       rescue => e
         # Stuff that should never happen
@@ -238,7 +243,7 @@ module LogStash; module Outputs; class ElasticSearch;
         @logger.debug("Failed actions for last bad bulk request!", :actions => actions)
 
         # We retry until there are no errors! Errors should all go to the retry queue
-        sleep_interval = sleep_for_interval(sleep_interval)        
+        sleep_interval = sleep_for_interval(sleep_interval)
         retry unless @stopping.true?
       end
     end

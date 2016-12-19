@@ -128,6 +128,7 @@ describe "outputs/elasticsearch" do
         end
       end
     end
+
     describe "without a port specified" do
       it "should properly set the default port (9200) on the HTTP client" do
         expect(manticore_url.port).to eql(9200)
@@ -303,6 +304,109 @@ describe "outputs/elasticsearch" do
 
       it "should raise a configuration error" do
         expect { subject.register }.to raise_error(LogStash::ConfigurationError)
+      end
+    end
+  end
+
+  describe "stale connection check" do
+    let(:validate_after_inactivity) { 123 }
+    subject(:eso) { LogStash::Outputs::ElasticSearch.new("validate_after_inactivity" => validate_after_inactivity) }
+
+    before do
+      allow(::Manticore::Client).to receive(:new).with(any_args).and_call_original
+      subject.register
+    end
+
+    it "should set the correct http client option for 'validate_after_inactivity" do
+      expect(::Manticore::Client).to have_received(:new) do |options|
+        expect(options[:check_connection_timeout]).to eq(validate_after_inactivity)
+      end
+    end
+  end
+
+  describe "custom parameters" do
+
+    let(:eso) {LogStash::Outputs::ElasticSearch.new(options)}
+
+    let(:manticore_urls) { eso.client.pool.urls }
+    let(:manticore_url) { manticore_urls.first }
+
+    let(:custom_parameters_hash) { { "id" => 1, "name" => "logstash" } }
+    let(:custom_parameters_query) { custom_parameters_hash.map {|k,v| "#{k}=#{v}" }.join("&") }
+
+    before(:each) do
+      eso.register
+    end
+
+    after(:each) do
+      eso.close rescue nil
+    end
+
+    context "using non-url hosts" do
+
+      let(:options) {
+        {
+          "index" => "my-index",
+          "hosts" => ["localhost:9202"],
+          "path" => "some-path",
+          "parameters" => custom_parameters_hash
+        }
+      }
+
+      it "creates a URI with the added parameters" do
+        expect(eso.parameters).to eql(custom_parameters_hash)
+      end
+
+      it "sets the query string on the HTTP client" do
+        expect(manticore_url.query).to eql(custom_parameters_query)
+      end
+    end
+
+    context "using url hosts" do
+
+      context "with embedded query parameters" do
+        let(:options) {
+          { "hosts" => ["http://localhost:9202/path?#{custom_parameters_query}"] }
+        }
+
+        it "sets the query string on the HTTP client" do
+          expect(manticore_url.query).to eql(custom_parameters_query)
+        end
+      end
+
+      context "with explicity query parameters" do
+        let(:options) {
+          {
+            "hosts" => ["http://localhost:9202/path"],
+            "parameters" => custom_parameters_hash
+          }
+        }
+
+        it "sets the query string on the HTTP client" do
+          expect(manticore_url.query).to eql(custom_parameters_query)
+        end
+      end
+
+      context "with explicity query parameters and existing url parameters" do
+        let(:existing_query_string) { "existing=param" }
+        let(:options) {
+          {
+            "hosts" => ["http://localhost:9202/path?#{existing_query_string}"],
+            "parameters" => custom_parameters_hash
+          }
+        }
+
+        it "keeps the existing query string" do
+          expect(manticore_url.query).to include(existing_query_string)
+        end
+
+        it "includes the new query string" do
+          expect(manticore_url.query).to include(custom_parameters_query)
+        end
+
+        it "appends the new query string to the existing one" do
+          expect(manticore_url.query).to eql("#{existing_query_string}&#{custom_parameters_query}")
+        end
       end
     end
   end
