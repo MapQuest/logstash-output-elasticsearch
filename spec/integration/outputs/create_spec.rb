@@ -2,9 +2,8 @@ require_relative "../../../spec/es_spec_helper"
 
 describe "client create actions", :integration => true do
   require "logstash/outputs/elasticsearch"
-  require "elasticsearch"
 
-  def get_es_output(action, id = nil)
+  def get_es_output(action, id)
     settings = {
       "manage_template" => true,
       "index" => "logstash-create",
@@ -12,7 +11,7 @@ describe "client create actions", :integration => true do
       "hosts" => get_host_port(),
       "action" => action
     }
-    settings['document_id'] = id unless id.nil?
+    settings['document_id'] = id
     LogStash::Outputs::ElasticSearch.new(settings)
   end
 
@@ -29,21 +28,7 @@ describe "client create actions", :integration => true do
     it "should create new documents with or without id" do
       subject = get_es_output("create", "id123")
       subject.register
-      subject.receive(LogStash::Event.new("message" => "sample message here"))
-      subject.flush
-      @es.indices.refresh
-      # Wait or fail until everything's indexed.
-      Stud::try(3.times) do
-        r = @es.search
-        insist { r["hits"]["total"] } == 1
-      end
-    end
-
-    it "should create new documents without id" do
-      subject = get_es_output("create")
-      subject.register
-      subject.receive(LogStash::Event.new("message" => "sample message here"))
-      subject.flush
+      subject.multi_receive([LogStash::Event.new("message" => "sample message here")])
       @es.indices.refresh
       # Wait or fail until everything's indexed.
       Stud::try(3.times) do

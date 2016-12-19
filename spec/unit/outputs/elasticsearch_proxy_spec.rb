@@ -1,7 +1,7 @@
 require_relative "../../../spec/es_spec_helper"
 require 'stud/temporary'
-require 'elasticsearch'
 require "logstash/outputs/elasticsearch"
+require 'manticore/client'
 
 describe "Proxy option" do
   let(:settings) {
@@ -15,7 +15,7 @@ describe "Proxy option" do
   }
 
   before do
-    allow(::Elasticsearch::Client).to receive(:new).with(any_args)
+    allow(::Manticore::Client).to receive(:new).with(any_args).and_call_original
   end
 
   describe "valid configs" do
@@ -27,8 +27,8 @@ describe "Proxy option" do
       let(:proxy) { "http://127.0.0.1:1234" }
 
       it "should set the proxy to the exact value" do
-        expect(::Elasticsearch::Client).to have_received(:new) do |options|
-          expect(options[:transport_options][:proxy]).to eql(proxy)
+        expect(::Manticore::Client).to have_received(:new) do |options|
+          expect(options[:proxy]).to eql(proxy)
         end
       end
     end
@@ -38,8 +38,18 @@ describe "Proxy option" do
 
       it "should pass through the proxy values as symbols" do
         expected = {:hosts => proxy["hosts"], :protocol => proxy["protocol"]}
-        expect(::Elasticsearch::Client).to have_received(:new) do |options|
-          expect(options[:transport_options][:proxy]).to eql(expected)
+        expect(::Manticore::Client).to have_received(:new) do |options|
+          expect(options[:proxy]).to eql(expected)
+        end
+      end
+    end
+
+    context "when not specified" do
+      let(:proxy) { nil }
+      
+      it "should not send the proxy option to manticore" do
+        expect(::Manticore::Client).to have_received(:new) do |options|
+          expect(options).not_to include(:proxy)
         end
       end
     end

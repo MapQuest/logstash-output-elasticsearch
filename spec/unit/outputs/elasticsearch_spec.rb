@@ -14,14 +14,15 @@ describe "outputs/elasticsearch" do
 
     let(:eso) {LogStash::Outputs::ElasticSearch.new(options)}
 
-    let(:manticore_host) {
-      eso.client.send(:client).transport.options[:hosts].first
-    }
+    let(:manticore_urls) { eso.client.pool.urls }
+    let(:manticore_url) { manticore_urls.first }
+
+    let(:do_register) { true }
 
     around(:each) do |block|
-      eso.register
+      eso.register if do_register
       block.call()
-      eso.close
+      eso.close if do_register
     end
 
     describe "getting a document type" do
@@ -65,31 +66,77 @@ describe "outputs/elasticsearch" do
       end
 
       it "should properly set the path on the HTTP client adding slashes" do
-        expect(manticore_host).to include("/" + options["path"] + "/")
+        expect(manticore_url.path).to eql("/" + options["path"] + "/")
       end
 
       context "with extra slashes" do
         let(:path) { "/slashed-path/ "}
-        let(:eso) {
-          LogStash::Outputs::ElasticSearch.new(options.merge("path" => "/some-path/"))
-        }
+        let(:options) { super.merge("path" => "/some-path/") }
 
         it "should properly set the path on the HTTP client without adding slashes" do
-          expect(manticore_host).to include(options["path"])
+          expect(manticore_url.path).to eql(options["path"])
+        end
+      end
+
+      context "with a URI based path" do
+        let(:options) do
+          o = super()
+          o.delete("path")
+          o["hosts"] = ["http://localhost:9200/mypath/"]
+          o
+        end
+        let(:client_host_path) { manticore_url.path }
+
+        it "should initialize without error" do
+          expect { eso }.not_to raise_error
+        end
+
+        it "should use the URI path" do
+          expect(client_host_path).to eql("/mypath/")
+        end
+
+        context "with a path option but no URL path" do
+          let(:options) do
+            o = super()
+            o["path"] = "/override/"
+            o["hosts"] = ["http://localhost:9200"]
+            o
+          end
+
+          it "should initialize without error" do
+            expect { eso }.not_to raise_error
+          end
+
+          it "should use the option path" do
+            expect(client_host_path).to eql("/override/")
+          end
+        end
+
+        # If you specify the path in two spots that is an error!
+        context "with a path option and a URL path" do
+          let(:do_register) { false } # Register will fail
+          let(:options) do
+            o = super()
+            o["path"] = "/override"
+            o["hosts"] = ["http://localhost:9200/mypath/"]
+            o
+          end
+
+          it "should initialize with an error" do
+            expect { eso.register }.to raise_error(LogStash::ConfigurationError)
+          end
         end
       end
     end
+
     describe "without a port specified" do
       it "should properly set the default port (9200) on the HTTP client" do
-        expect(manticore_host).to include("9200")
+        expect(manticore_url.port).to eql(9200)
       end
     end
     describe "with a port other than 9200 specified" do
-      let(:manticore_host) {
-        eso.client.send(:client).transport.options[:hosts].last
-      }
       it "should properly set the specified port on the HTTP client" do
-        expect(manticore_host).to include("9202")
+        expect(manticore_urls.any? {|u| u.port == 9202}).to eql(true)
       end
     end
 
@@ -116,9 +163,6 @@ describe "outputs/elasticsearch" do
 
   end
 
-  # TODO(sissel): Improve this. I'm not a fan of using message expectations (expect().to receive...)
-  # especially with respect to logging to verify a failure/retry has occurred. For now, this
-  # should suffice, though.
   context "with timeout set" do
     let(:listener) { Flores::Random.tcp_listener }
     let(:port) { listener[2] }
@@ -136,21 +180,15 @@ describe "outputs/elasticsearch" do
       eso.register
 
       # Expect a timeout to be logged.
-      expect(eso.logger).to receive(:error).with(/Attempted to send a bulk request/, anything)
-    end
-
-    after do
-      listener[0].close
-      # Stop the receive buffer, but don't flush because that would hang forever in this case since ES never returns a result
-      eso.instance_variable_get(:@buffer).stop(false,false)
-      eso.close
+      expect(eso.logger).to receive(:error).with(/Attempted to send a bulk request to Elasticsearch/i, anything).at_least(:once)
+      expect(eso.client).to receive(:bulk).at_least(:twice).and_call_original
     end
 
     it "should fail after the timeout" do
-      Thread.new { eso.receive(LogStash::Event.new) }
+      Thread.new { eso.multi_receive([LogStash::Event.new]) }
 
-      # Allow the timeout to occur.
-      sleep(options["timeout"] + 0.5)
+      # Allow the timeout to occur
+      sleep 6
     end
   end
 
@@ -178,12 +216,12 @@ describe "outputs/elasticsearch" do
   describe "SSL end to end" do
     shared_examples("an encrypted client connection") do
       it "should enable SSL in manticore" do
-        expect(eso.client.client_options[:hosts].map {|h| URI.parse(h).scheme}.uniq).to eql(['https'])
+        expect(eso.client.pool.urls.map(&:scheme).uniq).to eql(['https'])
       end
     end
 
     let(:eso) {LogStash::Outputs::ElasticSearch.new(options)}
-    subject(:manticore) { eso.client.client}
+    subject(:manticore) { eso.client.pool.adapter.client}
 
     before do
       eso.register
@@ -224,6 +262,151 @@ describe "outputs/elasticsearch" do
 
       it "should raise a configuration error" do
         expect { subject.register }.to raise_error(LogStash::ConfigurationError)
+      end
+    end
+  end
+
+  describe "retry_on_conflict" do
+    let(:num_retries) { 123 }
+    let(:event) { LogStash::Event.new("message" => "blah") }
+    subject(:eso) {LogStash::Outputs::ElasticSearch.new(options.merge('retry_on_conflict' => num_retries))}
+
+    context "with a regular index" do
+      let(:options) { {"action" => "index"} }
+
+      it "should interpolate the requested action value when creating an event_action_tuple" do
+        action, params, event_data = eso.event_action_tuple(event)
+        expect(params).not_to include({:_retry_on_conflict => num_retries})
+      end
+    end
+
+    context "using a plain update" do
+      let(:options) { {"action" => "update", "retry_on_conflict" => num_retries} }
+
+      it "should interpolate the requested action value when creating an event_action_tuple" do
+        action, params, event_data = eso.event_action_tuple(event)
+        expect(params).to include({:_retry_on_conflict => num_retries})
+      end
+    end
+  end
+
+  describe "sleep interval calculation" do
+    let(:retry_max_interval) { 64 }
+    subject(:eso) { LogStash::Outputs::ElasticSearch.new("retry_max_interval" => retry_max_interval) }
+
+    it "should double the given value" do
+      expect(eso.next_sleep_interval(2)).to eql(4)
+      expect(eso.next_sleep_interval(32)).to eql(64)
+    end
+
+    it "should not increase the value past the max retry interval" do
+      sleep_interval = 2
+      100.times do
+        sleep_interval = eso.next_sleep_interval(sleep_interval)
+        expect(sleep_interval).to be <= retry_max_interval
+      end
+    end
+  end
+
+  describe "stale connection check" do
+    let(:validate_after_inactivity) { 123 }
+    subject(:eso) { LogStash::Outputs::ElasticSearch.new("validate_after_inactivity" => validate_after_inactivity) }
+
+    before do
+      allow(::Manticore::Client).to receive(:new).with(any_args).and_call_original
+      subject.register
+    end
+
+    it "should set the correct http client option for 'validate_after_inactivity" do
+      expect(::Manticore::Client).to have_received(:new) do |options|
+        expect(options[:check_connection_timeout]).to eq(validate_after_inactivity)
+      end
+    end
+  end
+
+  describe "custom parameters" do
+
+    let(:eso) {LogStash::Outputs::ElasticSearch.new(options)}
+
+    let(:manticore_urls) { eso.client.pool.urls }
+    let(:manticore_url) { manticore_urls.first }
+
+    let(:custom_parameters_hash) { { "id" => 1, "name" => "logstash" } }
+    let(:custom_parameters_query) { custom_parameters_hash.map {|k,v| "#{k}=#{v}" }.join("&") }
+
+    before(:each) do
+      eso.register
+    end
+
+    after(:each) do
+      eso.close rescue nil
+    end
+
+    context "using non-url hosts" do
+
+      let(:options) {
+        {
+          "index" => "my-index",
+          "hosts" => ["localhost:9202"],
+          "path" => "some-path",
+          "parameters" => custom_parameters_hash
+        }
+      }
+
+      it "creates a URI with the added parameters" do
+        expect(eso.parameters).to eql(custom_parameters_hash)
+      end
+
+      it "sets the query string on the HTTP client" do
+        expect(manticore_url.query).to eql(custom_parameters_query)
+      end
+    end
+
+    context "using url hosts" do
+
+      context "with embedded query parameters" do
+        let(:options) {
+          { "hosts" => ["http://localhost:9202/path?#{custom_parameters_query}"] }
+        }
+
+        it "sets the query string on the HTTP client" do
+          expect(manticore_url.query).to eql(custom_parameters_query)
+        end
+      end
+
+      context "with explicity query parameters" do
+        let(:options) {
+          {
+            "hosts" => ["http://localhost:9202/path"],
+            "parameters" => custom_parameters_hash
+          }
+        }
+
+        it "sets the query string on the HTTP client" do
+          expect(manticore_url.query).to eql(custom_parameters_query)
+        end
+      end
+
+      context "with explicity query parameters and existing url parameters" do
+        let(:existing_query_string) { "existing=param" }
+        let(:options) {
+          {
+            "hosts" => ["http://localhost:9202/path?#{existing_query_string}"],
+            "parameters" => custom_parameters_hash
+          }
+        }
+
+        it "keeps the existing query string" do
+          expect(manticore_url.query).to include(existing_query_string)
+        end
+
+        it "includes the new query string" do
+          expect(manticore_url.query).to include(custom_parameters_query)
+        end
+
+        it "appends the new query string to the existing one" do
+          expect(manticore_url.query).to eql("#{existing_query_string}&#{custom_parameters_query}")
+        end
       end
     end
   end

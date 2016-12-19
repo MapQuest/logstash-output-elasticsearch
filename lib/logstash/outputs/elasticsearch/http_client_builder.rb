@@ -1,16 +1,33 @@
 module LogStash; module Outputs; class ElasticSearch;
   module HttpClientBuilder
     def self.build(logger, hosts, params)
-      client_settings = {}
+      client_settings = {
+        :pool_max => params["pool_max"],
+        :pool_max_per_route => params["pool_max_per_route"],
+        :check_connection_timeout => params["validate_after_inactivity"]
+      }
 
       common_options = {
         :client_settings => client_settings,
-        :sniffing => params["sniffing"],
-        :sniffing_delay => params["sniffing_delay"]
+        :resurrect_delay => params["resurrect_delay"],
+        :healthcheck_path => params["healthcheck_path"]
       }
 
+      if params["sniffing"]
+        common_options[:sniffing] = true
+        common_options[:sniffer_delay] = params["sniffing_delay"]
+      end
+
       common_options[:timeout] = params["timeout"] if params["timeout"]
-      client_settings[:path] = "/#{params["path"]}/".gsub(/\/+/, "/") # Normalize slashes
+
+      if params["path"]
+        client_settings[:path] = "/#{params["path"]}/".gsub(/\/+/, "/") # Normalize slashes
+      end
+
+      if params["parameters"]
+        client_settings[:parameters] = params["parameters"]
+      end
+
       logger.debug? && logger.debug("Normalizing http path", :path => params["path"], :normalized => client_settings[:path])
 
       client_settings.merge! setup_ssl(logger, params)
@@ -18,7 +35,7 @@ module LogStash; module Outputs; class ElasticSearch;
       common_options.merge! setup_basic_auth(logger, params)
 
       # Update API setup
-      raise( Logstash::ConfigurationError,
+      raise( LogStash::ConfigurationError,
         "doc_as_upsert and scripted_upsert are mutually exclusive."
       ) if params["doc_as_upsert"] and params["scripted_upsert"]
 
@@ -59,7 +76,10 @@ module LogStash; module Outputs; class ElasticSearch;
     end
 
     def self.setup_ssl(logger, params)
+      # If we have HTTPS hosts we act like SSL is enabled
+      params["ssl"] = true if params["hosts"].any? {|h| h.start_with?("https://")}
       return {} if params["ssl"].nil?
+
       return {:ssl => {:enabled => false}} if params["ssl"] == false
 
       cacert, truststore, truststore_password, keystore, keystore_password =

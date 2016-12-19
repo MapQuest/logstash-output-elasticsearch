@@ -1,13 +1,97 @@
-# 2.5.4
-  - New dependency requirements for logstash-core for the 5.0 release
-## 2.5.3
- - Bump minimum manticore version to 0.5.4 which fixes a memory leak (#392)
+## 5.4.1
+- Correctly sniff against ES 5.x clusters
+
+## 5.4.0
+- Perform healthcheck against hosts right after startup / sniffing
+- Add support for custom query parameters
+
+## 5.3.5
+- Docs: Remove mention of using the elasticsearch_java output plugin because it is no longer supported
+
+## 5.3.4
+- Add `sprintf` or event dependent configuration when specifying ingest pipeline
+
+## 5.3.3
+- Hide user/password in connection pool
+
+## 5.3.2
+- Use byte size, not char count for bulk operation size checks
+
+## 5.3.1
+- depends on Adressable ~> 2.3.0 to satisfy development dependency of the core ([logstash/#6204](https://github.com/elastic/logstash/issues/6204))
+
+## 5.3.0
+- Bulk operations will now target 20MB chunks at a time to reduce heap usage
+
+## 5.2.0
+- Change default lang for scripts to be painless, inline with ES 5.0. Earlier there was no default.
+
+## 5.1.2
+- Hide credentials in exceptions and log messages ([#482](https://github.com/logstash-plugins/logstash-output-elasticsearch/issues/482))
+- [internal] Remove dependency on longshoreman project
+
+## 5.1.1
+- Hide user and password from the URL logged during sniffing process.
+
+## 5.1.0
+- Add check_connection_timeout parameter (default 10m)
+- Set default timeout to 60s
+
+## 5.0.0
+- Breaking Change: Index template for 5.0 has been changed to reflect Elasticsearch's mapping changes. Most importantly,
+the subfield for string multi-fields has changed from `.raw` to `.keyword` to match ES default behavior. ([#386](https://github.com/logstash-plugins/logstash-output-elasticsearch/issues/386))
+
+**Users installing ES 5.x and LS 5.x**
+This change will not affect you and you will continue to use the ES defaults.
+
+**Users upgrading from LS 2.x to LS 5.x with ES 5.x**
+LS will not force upgrade the template, if `logstash` template already exists. This means you will still use
+`.raw` for sub-fields coming from 2.x. If you choose to use the new template, you will have to reindex your data after
+the new template is installed.
+
+## 4.1.3
+- Relax constraint on logstash-core-plugin-api to >= 1.60 <= 2.99
+
+## 4.1.2
+
+- Added a configuration called failure_type_logging_whitelist which takes a list of strings, that are error types from elasticsearch, so we prevent logging WARN if elasticsearch fails with that action. See https://github.com/logstash-plugins/logstash-output-elasticsearch/issues/423
+
+## 4.1.1
+- Fix bug where setting credentials would cause fatal errors. See https://github.com/logstash-plugins/logstash-output-elasticsearch/issues/441
+
+## 4.1.0
+- breaking,config: Removed obsolete config `host` and `port`. Please use the `hosts` config with the `[host:port]` syntax.
+- breaking,config: Removed obsolete config `index_type`. Please use `document_type` instead.
+- breaking,config: Set config `max_retries` and `retry_max_items` as obsolete
+
+## 4.0.0
+ - Make this plugin threadsafe. Workers no longer needed or supported
+ - Add pool_max and pool_max_per_route options
+
+## 3.0.2
+ - Fix issues where URI based paths in 'hosts' would not function correctly
+
+## 3.0.1
+ - Republish all the gems under jruby.
+
+## 3.0.0
+ - Update the plugin to the version 2.0 of the plugin api, this change is required for Logstash 5.0 compatibility. See https://github.com/elastic/logstash/issues/5141
+
+## 2.7.0
+ - Add `pipeline` configuration option for setting an ingest pipeline to run upon indexing
+
+
+## 2.6.2
+ - Fix bug where update index actions would not work with events with 'data' field
+
+## 2.6.1
+ - Add 'retry_on_conflict' configuration option which should have been here from the beginning
 
 ## 2.5.2
  - Fix bug with update document with doc_as_upsert and scripting (#364, #359)
  - Make error messages more verbose and easier to parse by humans
  - Retryable failures are now logged at the info level instead of warning. (issue #372)
- 
+
 ## 2.5.1
  - Fix bug where SSL would sometimes not be enabled
 

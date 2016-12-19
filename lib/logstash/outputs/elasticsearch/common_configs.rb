@@ -6,15 +6,9 @@ module LogStash; module Outputs; class ElasticSearch
       # delete old data or only search specific date ranges.
       # Indexes may not contain uppercase characters.
       # For weekly indexes ISO 8601 format is recommended, eg. logstash-%{+xxxx.ww}.
-      # LS uses Joda to format the index pattern from event timestamp. 
-      # Joda formats are defined http://www.joda.org/joda-time/apidocs/org/joda/time/format/DateTimeFormat.html[here]. 
+      # LS uses Joda to format the index pattern from event timestamp.
+      # Joda formats are defined http://www.joda.org/joda-time/apidocs/org/joda/time/format/DateTimeFormat.html[here].
       mod.config :index, :validate => :string, :default => "logstash-%{+YYYY.MM.dd}"
-
-      # The index type to write events to. Generally you should try to write only
-      # similar events to the same 'type'. String expansion `%{foo}` works here.
-      #
-      # Deprecated in favor of `docoument_type` field.
-      mod.config :index_type, :validate => :string, :obsolete => "Please use the 'document_type' setting instead. It has the same effect, but is more appropriately named."
 
       # The document type to write events to. Generally you should try to write only
       # similar events to the same 'type'. String expansion `%{foo}` works here.
@@ -22,15 +16,18 @@ module LogStash; module Outputs; class ElasticSearch
       # otherwise the document type will be assigned the value of 'logs'
       mod.config :document_type, :validate => :string
 
-      # Starting in Logstash 1.3 (unless you set option `manage_template` to false)
-      # a default mapping template for Elasticsearch will be applied, if you do not
-      # already have one set to match the index pattern defined (default of
-      # `logstash-%{+YYYY.MM.dd}`), minus any variables.  For example, in this case
-      # the template will be applied to all indices starting with `logstash-*`
+      # From Logstash 1.3 onwards, a template is applied to Elasticsearch during
+      # Logstash's startup if one with the name `template_name` does not already exist.
+      # By default, the contents of this template is the default template for
+      # `logstash-%{+YYYY.MM.dd}` which always matches indices based on the pattern
+      # `logstash-*`.  Should you require support for other index names, or would like
+      # to change the mappings in the template in general, a custom template can be
+      # specified by setting `template` to the path of a template file.
       #
-      # If you have dynamic templating (e.g. creating indices based on field names)
-      # then you should set `manage_template` to false and use the REST API to upload
-      # your templates manually.
+      # Setting `manage_template` to false disables this feature.  If you require more
+      # control over template creation, (e.g. creating indices dynamically based on
+      # field names) you should set `manage_template` to false and use the REST
+      # API to apply your templates manually.
       mod.config :manage_template, :validate => :boolean, :default => true
 
       # This configuration option defines how the template is named inside Elasticsearch.
@@ -90,29 +87,13 @@ module LogStash; module Outputs; class ElasticSearch
       # to prevent LS from sending bulk requests to the master nodes.  So this parameter should only reference either data or client nodes in Elasticsearch.
       mod.config :hosts, :validate => :array, :default => ["127.0.0.1"]
 
-      mod.config :host, :obsolete => "Please use the 'hosts' setting instead. You can specify multiple entries separated by comma in 'host:port' format."
-
-      # The port setting is obsolete.  Please use the 'hosts' setting instead.
-      # Hosts entries can be in "host:port" format.
-      mod.config :port, :obsolete => "Please use the 'hosts' setting instead. Hosts entries can be in 'host:port' format."
-
       # This plugin uses the bulk index API for improved indexing performance.
-      # In Logstashes >= 2.2 this setting defines the maximum sized bulk request Logstash will make
-      # You you may want to increase this to be in line with your pipeline's batch size.
+      # This setting defines the maximum sized bulk request Logstash will make.
+      # You may want to increase this to be in line with your pipeline's batch size.
       # If you specify a number larger than the batch size of your pipeline it will have no effect,
       # save for the case where a filter increases the size of an inflight batch by outputting
       # events.
-      #
-      # In Logstashes <= 2.1 this plugin uses its own internal buffer of events.
-      # This config option sets that size. In these older logstashes this size may
-      # have a significant impact on heap usage, whereas in 2.2+ it will never increase it.
-      # To make efficient bulk API calls, we will buffer a certain number of
-      # events before flushing that out to Elasticsearch. This setting
-      # controls how many events will be buffered before sending a batch
-      # of events. Increasing the `flush_size` has an effect on Logstash's heap size.
-      # Remember to also increase the heap size using `LS_HEAP_SIZE` if you are sending big documents
-      # or have increased the `flush_size` to a higher value.
-      mod.config :flush_size, :validate => :number, :default => 500
+      mod.config :flush_size, :validate => :number, :deprecate => "This setting is no longer necessary as we now try to restrict bulk requests to sane sizes. See the 'Batch Sizes' section of the docs. If you think you still need to restrict payloads based on the number, not size, of events, please open a ticket."
 
       # The amount of time since last flush before a flush is forced.
       #
@@ -133,8 +114,8 @@ module LogStash; module Outputs; class ElasticSearch
       # Create a new document with source if `document_id` doesn't exist in Elasticsearch
       mod.config :doc_as_upsert, :validate => :boolean, :default => false
 
-      # DEPRECATED This setting no longer does anything. It will be marked obsolete in a future version.
-      mod.config :max_retries, :validate => :number, :default => 3
+      #Obsolete since 4.1.0
+      mod.config :max_retries, :obsolete => "This setting no longer does anything. Please remove it from your config"
 
       # Set script name for scripted update mode
       mod.config :script, :validate => :string, :default => ""
@@ -145,8 +126,8 @@ module LogStash; module Outputs; class ElasticSearch
       #  file    : "script" contains the name of script stored in elasticseach's config directory
       mod.config :script_type, :validate => ["inline", 'indexed', "file"], :default => ["inline"]
 
-      # Set the language of the used script
-      mod.config :script_lang, :validate => :string, :default => ""
+      # Set the language of the used script. If not set, this defaults to painless in ES 5.0
+      mod.config :script_lang, :validate => :string, :default => "painless"
 
       # Set variable name passed to script (scripted update)
       mod.config :script_var_name, :validate => :string, :default => "event"
@@ -154,12 +135,23 @@ module LogStash; module Outputs; class ElasticSearch
       # if enabled, script is in charge of creating non-existent document (scripted update)
       mod.config :scripted_upsert, :validate => :boolean, :default => false
 
-      # Set max interval between bulk retries.
-      mod.config :retry_max_interval, :validate => :number, :default => 2
+      # Set initial interval in seconds between bulk retries. Doubled on each retry up to `retry_max_interval`
+      mod.config :retry_initial_interval, :validate => :number, :default => 2
 
-      # DEPRECATED This setting no longer does anything. If you need to change the number of retries in flight
-      # try increasing the total number of workers to better handle this.
-      mod.config :retry_max_items, :validate => :number, :default => 500, :deprecated => true
+      # Set max interval in seconds between bulk retries.
+      mod.config :retry_max_interval, :validate => :number, :default => 64
+
+      #Obsolete since 4.1.0
+      mod.config :retry_max_items, :obsolete => "This setting no longer does anything. Please remove it from your config"
+
+      # The number of times Elasticsearch should internally retry an update/upserted document
+      # See the https://www.elastic.co/guide/en/elasticsearch/guide/current/partial-updates.html[partial updates]
+      # for more info
+      mod.config :retry_on_conflict, :validate => :number, :default => 1
+
+      # Set which ingest pipeline you wish to execute for an event. You can also use event dependent configuration
+      # here like `pipeline => "%{INGEST_PIPELINE}"`
+      mod.config :pipeline, :validate => :string, :default => nil
     end
   end
 end end end
